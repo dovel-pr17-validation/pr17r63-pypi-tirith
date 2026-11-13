@@ -77,7 +77,7 @@ setup(
     },
     keywords=["iac", "policy", "terraform", "policy as code"],
     python_requires=">=3.8",
-    install_requires=["simplejson==3.17.2", "pydash==6.0.0", "PyYAML==6.0.1"],
+    install_requires=["simplejson==3.17.2", "pydash==6.0.2", "PyYAML==6.0.1"],
     extras_require={
         # `pip install py-tirith[tui]` adds the interactive interface (`tirith ui`).
         #
