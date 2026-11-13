@@ -1,0 +1,79 @@
+# Run a policy and read the verdict
+
+```bash
+tirith -policy-path .tirith/policies -input-path plan.json --fail-on-error
+echo $?
+```
+
+`-policy-path` takes a file or a directory. `-input-path` takes the document the provider expects.
+Add `--json` to get the result document instead of the pretty printer.
+
+## Exit codes are a contract
+
+| Exit | Meaning |
+| --- | --- |
+| `0` | Every check passed |
+| `1` | Tirith could not tell you either way — bad input, an unevaluable policy, or every check skipped |
+| `3` | A policy ran and said no |
+| `130` | Interrupted |
+
+`2` is never a verdict: it is argparse rejecting a flag on `lint`, `fmt` or `platform check`.
+An unknown first argument is reported by name (`tirith: 'lnit' is not a tirith command`) and
+exits `1`, the same as a tool or input problem.
+Tirith has no timeout code: a `platform check` that times out is `1` too.
+
+`tirith lint` and `tirith fmt` use the same codes and need no `--fail-on-error`: `3` for a finding,
+`1` for a missing path or nothing found, `0` for clean.
+
+**`3` is deliberately not `1`.** `3` means a check ran and refused the change. `1` means Tirith
+could not reach a verdict. A job that treats every non-zero code alike reports an outage as a
+policy violation and cannot tell a working gate from a broken one.
+
+**Without `--fail-on-error` the exit code is always `0`** and the verdict is only in the output.
+That is the historical behaviour, kept so upgrading cannot turn a passing pipeline red. Any real
+gate needs the flag.
+
+## A type-scoped policy refuses a plan that has none of the type
+
+`terraform_resource_type: "aws_db_instance"` on a plan with no database is severity `1`, "resource
+type not found". Under the default `error_tolerance: 0` that is a **failure, exit `3`**, so the
+policy refuses every unrelated plan. With `error_tolerance: 1` it is skipped instead; if it was the
+only evaluator, `final_result` is `null` and the exit is `1`. No `error_tolerance` alone yields
+"nothing in scope, pass". Add a guard instead: a `count` evaluator on the same type with
+`Equals 0`, which returns `0` for an absent type rather than erroring, and an expression of
+`guard || check`. Keep `error_tolerance: 1` on the check so it is skipped rather than failed and
+masked. `tirith-standards` ships this shape in `examples/org-standards/naming.json`.
+
+## `final_result: null` is not a pass
+
+It means **every check was skipped** — nothing was evaluated. Under `--fail-on-error` that exits
+`1`, not `0` and not `3`.
+
+It almost always means `provider_args` matched nothing. Check, in this order:
+
+1. `terraform_resource_type` — is that type actually in the plan?
+2. The attribute path — is it under `change.after`, and spelled as the plan spells it?
+3. `error_tolerance` — is it forgiving the very problem you wanted to catch?
+
+Do not reach for the condition until the provider is returning values.
+
+## Reading the result document
+
+`--json` returns `final_result`, an `evaluators[]` array, `errors`, and the `eval_expression` that
+was evaluated. Each evaluator carries `passed` (`true`, `false`, or `null` for skipped) and a
+`result[]` of individual findings.
+
+Each finding's `meta` carries the resource behind it: `address`, `type`, `name`, and the `change`
+with `actions`, `before`, `after` and `after_unknown`. That is how you name the resource that
+failed rather than only quoting the message.
+
+**One asymmetry:** when a check fails because an attribute is *absent*, there is no value to
+attach a resource to, so the failure arrives **without a resource address**. Find the culprit by
+looking in the plan for the resource lacking that attribute.
+
+## A misconfigured policy fails closed
+
+An unsupported `condition.type` comes back as a failed check, exit `3`, with the `errors` array
+empty. It fails in the safe direction, but a job that branches on the exit code sees a policy
+violation. The result message names the fault (`` `Exists` is not a supported evaluator ``), so
+when a check fails on every resource at once, read the message before reading the plan.
